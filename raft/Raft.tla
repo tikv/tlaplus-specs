@@ -1,4 +1,4 @@
----- MODULE Raft ----
+---------------------------- MODULE Raft -------------------------------
 (**********************************************************************)
 (* Copyright 2020 TiKV Project Authors. Licensed under Apache-2.0.    *)
 (*                                                                    *)
@@ -28,6 +28,7 @@ VARIABLES voters, (* Nodes that can vote. *)
           commitHistory (* A history of all committed logs. *)
 
 history == <<leaderHistory, commitHistory>>
+vars == <<voters, hardState, softState, logs, history>>
 
 Term == { t: t \in 0..MaxTerm }
 Voter == Nat
@@ -49,9 +50,6 @@ TypeInvarint == /\ voters \subseteq Voter
                 /\ \A v \in voters: /\ hardState[v] \in HardState
                                     /\ softState[v] \in SoftState
                                     /\ logs[v] \subseteq Entry
-
-(* All possible quorum. *)
-Quorum == { S \in SUBSET voters: Cardinality(S) * 2 > Cardinality(voters) }
 
 Init == /\ voters = InitVoters
         /\ hardState = [v \in InitVoters |-> [term |-> InitTerm, voteFor |-> None, commit |-> InitIndex]]
@@ -170,8 +168,9 @@ AppendLog(v, data) ==
 
 (* Becomes leader if possible. It's the same as handling RequestVoteResponse. *)
 ClaimLeadership(v) ==
-    /\ \E q \in Quorum: \A l \in q: /\ hardState[l].term = hardState[v].term
-                                    /\ hardState[l].voteFor = v
+    /\ LET met == { l \in voters: /\ hardState[l].term = hardState[v].term
+                                  /\ hardState[l].voteFor = v }
+       IN Cardinality(met) * 2 > Cardinality(voters)
     /\ softState' = [softState EXCEPT ![v] = [leader |-> v, role |-> "Leader"]]
     /\ AppendLog(v, NoValue)
     /\ leaderHistory' = leaderHistory \union { [leader |-> v, term |-> hardState[v].term] }
@@ -180,13 +179,16 @@ ClaimLeadership(v) ==
 (* Checks if it's possible to commit logs. It's the same as handling MsgAppendResponse. *)
 Commit(v) ==
     /\ LastLogOf(v).index # hardState[v].commit
-    /\ LET quorumLogs == { l \in logs[v]: \E q \in Quorum: \A o \in q: l \in logs[o]}
-           quorumLastLog == LastLog(quorumLogs)
-       IN /\ quorumLastLog.term = hardState[v].term
-          /\ hardState' = [hardState EXCEPT ![v] = [@ EXCEPT !.commit = quorumLastLog.index]]
-          /\ commitHistory' = commitHistory \union { l \in logs[v]: /\ l.index <= quorumLastLog.index
-                                                                    /\ l.index > hardState[v].commit }
-          /\ UNCHANGED <<voters, softState, logs, leaderHistory>>
+    /\ LET quorumLogs == { l \in logs[v]: /\ l.index > hardState[v].commit
+                                          /\ LET met == { o \in voters: l \in logs[o] }
+                                             IN Cardinality(met) * 2 > Cardinality(voters)}
+       IN /\ quorumLogs # {}
+          /\ LET quorumLastLog == LastLog(quorumLogs)
+             IN /\ quorumLastLog.term = hardState[v].term
+                /\ hardState' = [hardState EXCEPT ![v] = [@ EXCEPT !.commit = quorumLastLog.index]]
+                /\ commitHistory' = commitHistory \union { l \in logs[v]: /\ l.index <= quorumLastLog.index
+                                                                          /\ l.index > hardState[v].commit }
+                /\ UNCHANGED <<voters, softState, logs, leaderHistory>>
 
 StepFollower(v) == \/ CheckLeader(v)
                    \/ FetchLog(v)
@@ -208,6 +210,8 @@ Step(v) == CASE softState[v].role = "Leader" -> StepLeader(v)
 
 Next == \E v \in voters: \/ Step(v)
                          \/ Tick(v)
+
+Spec == Init /\ [][Next]_vars
 
 -----------------------------------------------------------------------
 
@@ -231,6 +235,13 @@ StateMachineSafety ==
     (* Leader Completeness: if a log entry is committed in a given *)
     (* term, then that entry will be present in the logs of the    *)
     (* leaders for all higher-numbered terms.                      *)
-    /\ \A v \in voters: CommittedLog(v) = { l \in commitHistory: l.index <= hardState[v].commit }
+    /\ \A v \in voters: \/ softState[v].role # "Leader"
+                        \/ CommittedLog(v) = { l \in commitHistory: l.index <= hardState[v].commit }
+
+Safety == TypeInvarint /\ ElectionSafety /\ StateMachineSafety
+
+------------------------------------------------------------------------
+
+THEOREM Spec => []Safety
 
 ========================================================================
