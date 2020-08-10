@@ -235,8 +235,9 @@ StateMachineSafety ==
     (* Leader Completeness: if a log entry is committed in a given *)
     (* term, then that entry will be present in the logs of the    *)
     (* leaders for all higher-numbered terms.                      *)
-    /\ \A v \in voters: \/ softState[v].role # "Leader"
-                        \/ CommittedLog(v) = { l \in commitHistory: l.index <= hardState[v].commit }
+    /\ \A v \in voters: \/ /\ softState[v].role = "Leader"
+                           /\ CommittedLog(v) = { l \in commitHistory: l.index <= hardState[v].commit }
+                        \/ softState[v].role # "Leader"
 
 Safety == TypeInvarint /\ ElectionSafety /\ StateMachineSafety
 
