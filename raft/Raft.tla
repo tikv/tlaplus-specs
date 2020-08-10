@@ -171,10 +171,18 @@ ClaimLeadership(v) ==
     /\ LET met == { l \in voters: /\ hardState[l].term = hardState[v].term
                                   /\ hardState[l].voteFor = v }
        IN Cardinality(met) * 2 > Cardinality(voters)
-    /\ softState' = [softState EXCEPT ![v] = [leader |-> v, role |-> "Leader"]]
+    /\ softState' = [o \in voters |-> IF hardState[o].term < hardState[v].term
+                                      THEN [leader |-> v, role |-> "Follower" ]
+                                      ELSE IF o = v
+                                         THEN [leader |-> v, role |-> "Leader"]
+                                         ELSE softState[o]]
+    (* Force updating term to reduce states. *)
+    /\ hardState' = [o \in voters |-> IF hardState[o].term < hardState[v].term
+                                      THEN [hardState[o] EXCEPT !.term = hardState[v].term]
+                                      ELSE hardState[o]]
     /\ AppendLog(v, NoValue)
     /\ leaderHistory' = leaderHistory \union { [leader |-> v, term |-> hardState[v].term] }
-    /\ UNCHANGED <<voters, hardState, commitHistory>>
+    /\ UNCHANGED <<voters, commitHistory>>
 
 (* Checks if it's possible to commit logs. It's the same as handling MsgAppendResponse. *)
 Commit(v) ==
@@ -184,7 +192,7 @@ Commit(v) ==
                                              IN Cardinality(met) * 2 > Cardinality(voters)}
        IN /\ quorumLogs # {}
           /\ LET quorumLastLog == LastLog(quorumLogs)
-             IN /\ quorumLastLog.term = hardState[v].term
+             IN /\ quorumLastLog.term = hardState[v].term (* The key for commit safety *)
                 /\ hardState' = [hardState EXCEPT ![v] = [@ EXCEPT !.commit = quorumLastLog.index]]
                 /\ commitHistory' = commitHistory \union { l \in logs[v]: /\ l.index <= quorumLastLog.index
                                                                           /\ l.index > hardState[v].commit }
